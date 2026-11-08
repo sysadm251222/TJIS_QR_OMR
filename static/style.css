@@ -1,7 +1,27 @@
-*{box-sizing:border-box}
-:root{--navy:#06245f;--blue:#123f91;--royal:#174b9b;--gold:#ffc928;--ink:#17233b}
-html{min-height:100%;background:#eaf1fa}
-body{margin:0;min-height:100vh;color:var(--ink);font-family:Arial,Helvetica,sans-serif;background:linear-gradient(180deg,rgba(239,246,255,.88),rgba(245,248,253,.96)),url("/static/images/school-campus-bg.jpg") center 110px/cover fixed no-repeat}
+*{
+box-sizing:border-box
+}
+:root
+{
+--navy:#06245f;
+--blue:#123f91;
+--royal:#174b9b;
+--gold:#ffc928;
+--ink:#17233b
+}
+html
+{
+min-height:100%;
+background:#eaf1fa
+}
+body
+{
+margin:0;
+min-height:100vh;
+color:var(--ink);
+font-family:Arial,Helvetica,sans-serif;
+background: url("/static/images/school-campus-bg.jpg") center 110px/cover fixed no-repeat
+}
 .site-header{background:linear-gradient(110deg,#041d55,#10479c);color:#fff;padding:12px clamp(14px,3vw,42px);display:flex;align-items:center;gap:18px;flex-wrap:wrap;border-bottom:4px solid var(--gold);box-shadow:0 3px 14px rgba(0,20,70,.22)}
 .brand{display:flex;align-items:center;gap:12px;color:white;text-decoration:none;min-width:235px}
 .brand img{width:66px;height:62px;object-fit:contain;background:#fff;border-radius:50%;padding:2px}
