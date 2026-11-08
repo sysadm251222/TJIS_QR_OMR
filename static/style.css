@@ -17,7 +17,7 @@ background:#eaf1fa
 body
 {
 margin:0;
-min-height:100vh;
+\*min-height:100vh;*/
 color:var(--ink);
 font-family:Arial,Helvetica,sans-serif;
 background: url("/static/images/school-campus-bg.jpg") center 110px/cover fixed no-repeat
