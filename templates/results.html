@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Examination Results</h1>
+<p class="muted">MCQ marks are updated automatically after OMR scanning. Descriptive answers require teacher evaluation.</p>
+<div class="panel">
+<table>
+<thead><tr><th>Student</th><th>Admission</th><th>Grade</th><th>Exam</th><th>Marks</th><th>Status</th><th>Action</th></tr></thead>
+<tbody>
+{% for r in rows %}
+<tr>
+<td>{{r.name}}</td><td>{{r.admission_no}}</td><td>{{r.grade}}</td>
+<td>{{r.title}} / {{r.subject}}</td>
+<td><strong>{{"%.2f"|format(r.marks|float)}}</strong> / {{"%.2f"|format(r.maximum|float)}}</td>
+<td>{{r.status}}</td><td><a class="button secondary" href="/grade/{{r.sid}}">Review / Evaluate</a></td>
+</tr>
+{% else %}
+<tr><td colspan="7">No examination results available yet.</td></tr>
+{% endfor %}
+</tbody></table></div>
+{% endblock %}

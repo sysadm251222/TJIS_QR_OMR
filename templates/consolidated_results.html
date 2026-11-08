@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Student-wise Subject Consolidated Marks</h1>
+<p class="muted">Marks are grouped by student and subject across all exams with available scanned/evaluated scripts.</p>
+<div class="panel"><div style="overflow-x:auto"><table>
+<thead><tr><th>Student</th><th>Admission No.</th><th>Grade</th><th>Subject</th><th>Total Marks</th><th>Maximum</th><th>Percentage</th><th>Exams</th></tr></thead>
+<tbody>{% for r in rows %}
+<tr><td>{{r.name}}</td><td>{{r.admission_no}}</td><td>{{r.grade}} {{r.section}}</td><td>{{r.subject}}</td>
+<td><strong>{{"%.2f"|format(r.marks|float)}}</strong></td><td>{{"%.2f"|format(r.maximum|float)}}</td>
+<td>{% if r.maximum %}{{"%.2f"|format((r.marks|float / r.maximum|float)*100)}}%{% else %}—{% endif %}</td><td>{{r.exams or '—'}}</td></tr>
+{% else %}<tr><td colspan="8">No consolidated marks are available yet.</td></tr>{% endfor %}</tbody>
+</table></div></div>
+{% endblock %}

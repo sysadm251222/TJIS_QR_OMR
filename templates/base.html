@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>TJIS QR OMR</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="site-header">
+    <a class="brand" href="/" aria-label="TJIS-BPT home">
+      <img src="{{ url_for('static', filename='images/jgi-logo.png') }}" alt="JGI logo">
+      <span class="brand-copy">
+        <strong>The Jain International School</strong>
+        <small>Bangarpet (TJIS-BPT) · CBSE Affiliated</small>
+      </span>
+    </a>
+    <div class="system-title">QR + OMR Based Examination System</div>{% if session.uid %}
+    <nav aria-label="Main navigation"><a href="/">Dashboard</a>{% if session.role=='admin' %}<a href="/students">Students</a>{% endif %}<a
+            href="/exams">Exams</a><a href="/omr-scan">OMR Scan</a><a href="/results">Results</a><a
+            href="/results/consolidated">Consolidated Marks</a>{% if session.role=='admin' %}
+        <a href="/teachers">Teacher Logins</a>{% endif %}<a href="{{ url_for('account_password') }}">Change Password</a><a
+            href="/logout">Logout</a></nav>{% endif %}</header>
+ <main class="page-shell">
+    {% for m in get_flashed_messages() %}<div class="flash">{{m}}</div>{% endfor %}
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="site-footer">
+    <span>© 2026 The Jain International School, Bangarpet (TJIS-BPT)</span>
+    <strong>Character. Courage. Commitment.</strong>
+</body>
+</html>

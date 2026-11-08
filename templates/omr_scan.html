@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>OMR Scanning & Bulk Upload</h1>
+<section class="panel">
+  <h2>Scan one OMR sheet</h2>
+  <p>Upload a complete A4 OMR sheet as JPG or PNG. A flatbed scan at 300 DPI, with no cropping or rotation, is recommended.</p>
+  <form method="post" enctype="multipart/form-data">
+    <label>OMR image</label><input type="file" name="sheet" accept="image/jpeg,image/png" required>
+    <button type="submit">Read OMR Sheet</button>
+  </form>
+</section>
+<section class="panel">
+  <h2>Bulk OMR image upload</h2>
+  <p>Select multiple student OMR images. Each sheet must contain its own valid QR code.</p>
+  <form method="post" action="{{ url_for('omr_bulk_upload') }}" enctype="multipart/form-data">
+    <label>Select multiple JPG/PNG files</label><input type="file" name="sheets" accept="image/jpeg,image/png" multiple required>
+    <button type="submit">Process All Selected Sheets</button>
+  </form>
+</section>
+<section class="panel">
+  <h2>Capture using device camera</h2>
+  <p>Allow camera access, place the complete sheet in view, and capture.</p>
+  <video id="camera" autoplay playsinline style="width:100%;max-width:620px;background:#111;border-radius:10px"></video>
+  <canvas id="snapshot" hidden></canvas>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+    <button type="button" id="startCamera">Start Camera</button>
+    <button type="button" id="capture" disabled>Capture OMR Sheet</button>
+  </div>
+  <form id="cameraForm" method="post" enctype="multipart/form-data" style="margin-top:12px">
+    <input type="file" name="sheet" id="cameraFile" accept="image/jpeg" required>
+    <button type="submit">Submit Captured Sheet</button>
+  </form>
+  <p id="cameraStatus" class="muted">Camera access requires permission. On mobile, use HTTPS or localhost.</p>
+</section>
+<p class="muted">Blank, multiple and uncertain marks must be teacher-verified. Descriptive answers are manually evaluated. Always review scanned marks before publishing results.</p>
+<script>
+let cameraStream=null;
+const video=document.getElementById('camera');
+const start=document.getElementById('startCamera');
+const capture=document.getElementById('capture');
+const status=document.getElementById('cameraStatus');
+start.addEventListener('click',async()=>{
+  try{
+    cameraStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false});
+    video.srcObject=cameraStream; capture.disabled=false; status.textContent='Camera is ready. Position the entire OMR sheet and capture.';
+  }catch(e){status.textContent='Unable to open camera: '+e.message;}
+});
+capture.addEventListener('click',()=>{
+  const canvas=document.getElementById('snapshot');
+  if(!video.videoWidth){status.textContent='Wait for the camera preview to load.';return;}
+  canvas.width=video.videoWidth; canvas.height=video.videoHeight;
+  canvas.getContext('2d').drawImage(video,0,0);
+  canvas.toBlob(blob=>{
+    const file=new File([blob],'camera_omr.jpg',{type:'image/jpeg'});
+    const transfer=new DataTransfer(); transfer.items.add(file);
+    document.getElementById('cameraFile').files=transfer.files;
+    status.textContent='Image captured. Select “Submit Captured Sheet” to process it.';
+  },'image/jpeg',0.95);
+});
+window.addEventListener('beforeunload',()=>{if(cameraStream)cameraStream.getTracks().forEach(t=>t.stop());});
+</script>
+{% endblock %}

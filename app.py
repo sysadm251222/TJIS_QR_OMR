@@ -1,10 +1,10 @@
-import os,io,csv,json,sqlite3,zipfile
+import os,io,csv,json,sqlite3,zipfile,re
 from functools import wraps
 from datetime import datetime
 from flask import Flask,render_template,request,redirect,url_for,session,flash,send_file,abort
 from werkzeug.security import generate_password_hash,check_password_hash
 from openpyxl import load_workbook,Workbook
-from openpyxl.styles import Font,PatternFill
+from openpyxl.styles import Font, PatternFill
 import qrcode,cv2,numpy as np
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
@@ -48,6 +48,8 @@ def admin(f):
     def w(*a,**k):
         if not session.get("uid"): return redirect(url_for("login"))
         if session.get("role")!="admin": abort(403)
+        with db() as c: u=c.execute("SELECT active,role FROM users WHERE id=?",(session["uid"],)).fetchone()
+        if not u or not u["active"] or u["role"]!="admin": session.clear(); return redirect(url_for("login"))
         return f(*a,**k)
     return w
 def excel_rows(f):
@@ -59,12 +61,26 @@ def excel_rows(f):
     if not rows:return []
     heads=[str(x).strip().lower() if x is not None else "" for x in rows[0]]
     return [dict(zip(heads,r)) for r in rows[1:] if any(x is not None for x in r)]
+def normalize_header(value):
+    """Normalize headings such as 'Admission No.' and 'Student Name'."""
+    return re.sub(r"[^a-z0-9]", "", str(value or "").strip().lower())
+
 def getv(r,*names):
-    d={str(k).strip().lower():v for k,v in r.items()}
+    d={normalize_header(k):v for k,v in r.items()}
     for n in names:
-        v=d.get(n.lower())
-        if v is not None:return str(v).strip()
+        v=d.get(normalize_header(n))
+        if v is not None and str(v).strip() != "":
+            return str(v).strip()
     return ""
+
+def normalize_grade(value):
+    """Compare labels such as 'Grade 8', 'Class-8', 'VIII', and '8'."""
+    raw=str(value or "").strip().lower()
+    raw=re.sub(r"^(grade|class|standard|std)\s*", "", raw)
+    raw=re.sub(r"\s+", "", raw)
+    roman={"i":"1","ii":"2","iii":"3","iv":"4","v":"5","vi":"6",
+           "vii":"7","viii":"8","ix":"9","x":"10","xi":"11","xii":"12"}
+    return roman.get(raw, raw)
 def qr_img(exam_id,student_id):
     im=qrcode.make(json.dumps({"exam_id":int(exam_id),"student_id":int(student_id)}))
     b=io.BytesIO(); im.save(b,format="PNG"); b.seek(0); return b
@@ -151,8 +167,61 @@ def teacher_toggle(uid):
     with db() as c:c.execute("UPDATE users SET active=1-active WHERE id=? AND role='teacher'",(uid,))
     flash("Teacher account status changed.");return redirect(url_for("teachers"))
 
-@app.route("/students",methods=["GET","POST"])
+@app.route("/teachers/<int:uid>/edit",methods=["GET","POST"])
+@admin
+def teacher_edit(uid):
+    with db() as c:
+        user=c.execute("SELECT * FROM users WHERE id=? AND role='teacher'",(uid,)).fetchone()
+        if not user: abort(404)
+        if request.method=="POST":
+            username=request.form.get("username","").strip(); full_name=request.form.get("full_name","").strip()
+            if not username or not full_name: flash("Name and username are required.")
+            else:
+                try:
+                    c.execute("UPDATE users SET username=?,full_name=? WHERE id=? AND role='teacher'",(username,full_name,uid))
+                    flash("Teacher profile updated."); return redirect(url_for("teachers"))
+                except sqlite3.IntegrityError: flash("That username is already in use.")
+    return render_template("edit_teacher.html",u=user)
+
+@app.route("/teachers/bulk-delete",methods=["POST"])
+@admin
+def teacher_bulk_delete():
+    ids=[int(x) for x in request.form.getlist("user_ids") if x.isdigit()]
+    if not ids: flash("Select at least one teacher.")
+    else:
+        with db() as c:
+            marks=','.join('?' for _ in ids)
+            cur=c.execute(f"UPDATE users SET active=0 WHERE role='teacher' AND id IN ({marks})",ids)
+            flash(f"{cur.rowcount} teacher account(s) disabled. Accounts are retained for audit and can be re-enabled.")
+    return redirect(url_for("teachers"))
+
+@app.route("/teachers/<int:uid>/reset-password",methods=["POST"])
+@admin
+def teacher_reset_password(uid):
+    pw=request.form.get("new_password","")
+    if len(pw)<8: flash("New password must be at least 8 characters.")
+    else:
+        with db() as c:
+            cur=c.execute("UPDATE users SET password_hash=? WHERE id=? AND role IN ('admin','teacher')",(generate_password_hash(pw),uid))
+            flash("Password reset successfully." if cur.rowcount else "Account not found.")
+    return redirect(url_for("teachers"))
+
+@app.route("/account/password",methods=["GET","POST"])
 @logged
+def account_password():
+    if request.method=="POST":
+        old=request.form.get("current_password",""); new=request.form.get("new_password",""); confirm=request.form.get("confirm_password","")
+        with db() as c: user=c.execute("SELECT * FROM users WHERE id=?",(session["uid"],)).fetchone()
+        if not user or not check_password_hash(user["password_hash"],old): flash("Current password is incorrect.")
+        elif len(new)<8: flash("New password must be at least 8 characters.")
+        elif new!=confirm: flash("New password and confirmation do not match.")
+        else:
+            with db() as c:c.execute("UPDATE users SET password_hash=? WHERE id=?",(generate_password_hash(new),session["uid"]))
+            flash("Your password has been changed."); return redirect(url_for("home"))
+    return render_template("change_password.html")
+
+@app.route("/students",methods=["GET","POST"])
+@admin
 def students():
     if request.method=="POST":
         try:
@@ -162,25 +231,73 @@ def students():
         return redirect(url_for("students"))
     with db() as c:rows=c.execute("SELECT * FROM students WHERE active=1 ORDER BY grade,section,name").fetchall()
     return render_template("students.html",students=rows)
+@app.route("/students/<int:sid>/edit",methods=["GET","POST"])
+@admin
+def student_edit(sid):
+    with db() as c:
+        student=c.execute("SELECT * FROM students WHERE id=?",(sid,)).fetchone()
+        if not student: abort(404)
+        if request.method=="POST":
+            values=(request.form.get("admission_no","").strip(),request.form.get("name","").strip(),request.form.get("grade","").strip(),request.form.get("section","").strip(),request.form.get("roll_no","").strip(),sid)
+            if not all(values[:3]): flash("Admission number, student name and grade are required.")
+            else:
+                try:
+                    c.execute("UPDATE students SET admission_no=?,name=?,grade=?,section=?,roll_no=? WHERE id=?",values)
+                    flash("Student profile updated."); return redirect(url_for("students"))
+                except sqlite3.IntegrityError: flash("Admission number already exists.")
+    return render_template("edit_student.html",s=student)
+
+@app.route("/students/bulk-delete",methods=["POST"])
+@admin
+def student_bulk_delete():
+    ids=[int(x) for x in request.form.getlist("student_ids") if x.isdigit()]
+    if not ids: flash("Select at least one student.")
+    else:
+        with db() as c:
+            marks=','.join('?' for _ in ids)
+            cur=c.execute(f"UPDATE students SET active=0 WHERE id IN ({marks}) AND active=1",ids)
+            flash(f"{cur.rowcount} student(s) archived. Exam scripts and results are preserved.")
+    return redirect(url_for("students"))
+
 @app.route("/students/template")
-@logged
+@admin
 def student_template():
     wb=Workbook();ws=wb.active;ws.append(["admission_no","name","grade","section","roll_no"]);ws.append(["TJIS001","Aarav Kumar","8","A","1"])
     b=io.BytesIO();wb.save(b);b.seek(0);return send_file(b,as_attachment=True,download_name="student_bulk_upload_template.xlsx")
 @app.route("/students/bulk",methods=["POST"])
-@logged
+@admin
 def student_bulk():
     f=request.files.get("file")
+    if not f or not f.filename:
+        flash("Please choose an Excel (.xlsx) or CSV file.")
+        return redirect(url_for("students"))
     try:
-        rows=excel_rows(f);ok=skip=0
+        rows=excel_rows(f)
+        ok=skip=0
         with db() as c:
             for r in rows:
-                adm=getv(r,"admission_no","admission number");name=getv(r,"name","student_name");grade=getv(r,"grade","class")
-                if not adm or not name or not grade:skip+=1;continue
-                try:c.execute("INSERT INTO students(admission_no,name,grade,section,roll_no) VALUES(?,?,?,?,?)",(adm,name,grade,getv(r,"section"),getv(r,"roll_no","roll no")));ok+=1
-                except sqlite3.IntegrityError:skip+=1
-        flash(f"Student import: {ok} added; {skip} skipped (duplicate/incomplete).")
-    except Exception as e:flash(f"Import error: {e}")
+                adm=getv(r,"admission_no","admission number","admission no","admission_number",
+                         "adm no","adm_no","student id","student_code","registration number")
+                name=getv(r,"name","student_name","student name","full name","name of student")
+                grade=getv(r,"grade","class","standard","std","class/grade","grade name")
+                section=getv(r,"section","sec","division")
+                roll=getv(r,"roll_no","roll no","roll number","rollnumber")
+                if not adm or not name or not grade:
+                    skip+=1
+                    continue
+                grade=normalize_grade(grade)
+                try:
+                    c.execute(
+                        "INSERT INTO students(admission_no,name,grade,section,roll_no) VALUES(?,?,?,?,?)",
+                        (adm.strip(),name.strip(),grade,section.strip(),roll.strip())
+                    )
+                    ok+=1
+                except sqlite3.IntegrityError:
+                    skip+=1
+        flash(f"Student import completed: {ok} added; {skip} skipped. "
+              f"Required columns: Admission Number, Student Name, and Grade/Class.")
+    except Exception as e:
+        flash(f"Import error: {e}")
     return redirect(url_for("students"))
 
 @app.route("/exams",methods=["GET","POST"])
@@ -198,8 +315,11 @@ def exam(eid):
         e=c.execute("SELECT * FROM exams WHERE id=?",(eid,)).fetchone()
         if not e:abort(404)
         qs=c.execute("SELECT * FROM questions WHERE exam_id=? ORDER BY qno",(eid,)).fetchall()
-        n=c.execute("SELECT COUNT(*) FROM students WHERE active=1 AND grade=?",(e["grade"],)).fetchone()[0]
-    return render_template("exam.html",e=e,questions=qs,n=n)
+        active_students=c.execute("SELECT id,name,admission_no,grade,section,roll_no FROM students WHERE active=1").fetchall()
+        eligible_students=[s for s in active_students
+                           if normalize_grade(s["grade"]) == normalize_grade(e["grade"])]
+        n=len(eligible_students)
+    return render_template("exam.html",e=e,questions=qs,n=n,eligible_students=eligible_students)
 @app.route("/exam/<int:eid>/question",methods=["POST"])
 @logged
 def addq(eid):
@@ -239,7 +359,8 @@ def bulk_download(eid):
     with db() as c:
         e=c.execute("SELECT * FROM exams WHERE id=?",(eid,)).fetchone()
         if not e:abort(404)
-        sts=c.execute("SELECT * FROM students WHERE active=1 AND grade=? ORDER BY section,name",(e["grade"],)).fetchall()
+        all_students=c.execute("SELECT * FROM students WHERE active=1 ORDER BY section,name").fetchall()
+        sts=[s for s in all_students if normalize_grade(s["grade"]) == normalize_grade(e["grade"])]
         qs=c.execute("SELECT * FROM questions WHERE exam_id=? ORDER BY qno",(eid,)).fetchall()
     if not qs or not sts:flash("Add questions and eligible students before bulk download.");return redirect(url_for("exam",eid=eid))
     b=io.BytesIO()
@@ -251,37 +372,66 @@ def bulk_download(eid):
             except Exception as ex:z.writestr(f"ERRORS/{stem}.txt",str(ex))
     b.seek(0);return send_file(b,mimetype="application/zip",as_attachment=True,download_name=f"Exam_{eid}_Student_Papers_and_OMR.zip")
 
+def process_omr_bytes(file_bytes):
+    """Decode one complete A4 OMR image and save its MCQ responses."""
+    raw=np.frombuffer(file_bytes,np.uint8)
+    im=cv2.imdecode(raw,cv2.IMREAD_COLOR)
+    if im is None: raise ValueError("Could not read image. Use JPG or PNG.")
+    if im.shape[1]<700 or im.shape[0]<900: raise ValueError("Scan the complete A4 sheet; avoid cropping.")
+    im=cv2.resize(im,(2480,3508))
+    payload,_,_=cv2.QRCodeDetector().detectAndDecode(im)
+    if not payload: raise ValueError("QR code not detected. Ensure it is clear and not covered.")
+    data=json.loads(payload); eid=int(data["exam_id"]); sid=int(data["student_id"])
+    e,student,qs=exam_student(eid,sid)
+    mcqs=[q for q in qs if q["qtype"]=="MCQ"]
+    gray=cv2.cvtColor(im,cv2.COLOR_BGR2GRAY)
+    xs=[75*mm,105*mm,135*mm,165*mm]; top=A4[1]-66*mm; gap=9.2*mm; flags=[]
+    with db() as c:
+        c.execute("INSERT OR IGNORE INTO scripts(exam_id,student_id,status) VALUES(?,?,?)",(eid,sid,"Pending"))
+        script=c.execute("SELECT id FROM scripts WHERE exam_id=? AND student_id=?",(eid,sid)).fetchone()["id"]
+        for q in qs:
+            c.execute("INSERT OR IGNORE INTO answers(script_id,question_id) VALUES(?,?)",(script,q["id"]))
+        for i,q in enumerate(mcqs):
+            yp=int((A4[1]-(top-(i+1)*gap))*300/72); dark=[]
+            for xppt in xs:
+                xp=int(xppt*300/72); rad=22
+                roi=gray[max(0,yp-rad):yp+rad+1,max(0,xp-rad):xp+rad+1]
+                dark.append(255-float(np.mean(roi)))
+            marked=[j for j,x in enumerate(dark) if x>48]
+            response="ABCD"[marked[0]] if len(marked)==1 else ("MULTIPLE" if marked else "")
+            marks=float(q["max_marks"]) if response and response==q["answer_key"].upper() else 0
+            if len(marked)!=1 or not q["answer_key"]: flags.append(f"Q{q['qno']}")
+            aid=c.execute("SELECT id FROM answers WHERE script_id=? AND question_id=?",(script,q["id"])).fetchone()["id"]
+            c.execute("UPDATE answers SET response=?,marks=? WHERE id=?",(response,marks,aid))
+        c.execute("UPDATE scripts SET status='Auto-Corrected - Review Required' WHERE id=?",(script,))
+    return script,student["name"],flags
+
 @app.route("/omr-scan",methods=["GET","POST"])
 @logged
 def omr_scan():
     if request.method=="POST":
         try:
-            raw=np.frombuffer(request.files["sheet"].read(),np.uint8);im=cv2.imdecode(raw,cv2.IMREAD_COLOR)
-            if im is None:raise ValueError("Could not read image.")
-            if im.shape[1]<700 or im.shape[0]<900:raise ValueError("Scan complete A4 sheet at 300 DPI.")
-            W,H=2480,3508;im=cv2.resize(im,(W,H));payload,_,_=cv2.QRCodeDetector().detectAndDecode(im)
-            if not payload:raise ValueError("QR code not detected.")
-            data=json.loads(payload);eid=int(data["exam_id"]);sid=int(data["student_id"]);e,s,qs=exam_student(eid,sid);mcqs=[q for q in qs if q["qtype"]=="MCQ"]
-            gray=cv2.cvtColor(im,cv2.COLOR_BGR2GRAY);xs=[75*mm,105*mm,135*mm,165*mm];top=A4[1]-66*mm;gap=9.2*mm;flags=[]
-            with db() as c:
-                c.execute("INSERT OR IGNORE INTO scripts(exam_id,student_id,status) VALUES(?,?,?)",(eid,sid,"Pending"))
-                script=c.execute("SELECT id FROM scripts WHERE exam_id=? AND student_id=?",(eid,sid)).fetchone()["id"]
-                for q in qs:c.execute("INSERT OR IGNORE INTO answers(script_id,question_id) VALUES(?,?)",(script,q["id"]))
-                for i,q in enumerate(mcqs):
-                    yp=int((A4[1]-(top-(i+1)*gap))*300/72);dark=[]
-                    for xppt in xs:
-                        xp=int(xppt*300/72);rad=22
-                        roi=gray[max(0,yp-rad):yp+rad+1,max(0,xp-rad):xp+rad+1];dark.append(255-float(np.mean(roi)))
-                    marked=[j for j,x in enumerate(dark) if x>48];response="ABCD"[marked[0]] if len(marked)==1 else ("MULTIPLE" if marked else "")
-                    marks=float(q["max_marks"]) if response==q["answer_key"].upper() else 0
-                    if len(marked)!=1:flags.append(f"Q{q['qno']}")
-                    aid=c.execute("SELECT id FROM answers WHERE script_id=? AND question_id=?",(script,q["id"])).fetchone()["id"]
-                    c.execute("UPDATE answers SET response=?,marks=? WHERE id=?",(response,marks,aid))
-            flash(f"OMR read for {s['name']}. Review flagged questions: {', '.join(flags) if flags else 'none'}.")
+            script,name,flags=process_omr_bytes(request.files["sheet"].read())
+            flash(f"OMR read for {name}. Review flagged questions: {', '.join(flags) if flags else 'none'}.")
             return redirect(url_for("grade",sid=script))
-        except Exception as ex:flash(f"OMR scan error: {ex}")
+        except Exception as ex: flash(f"OMR scan error: {ex}")
         return redirect(url_for("omr_scan"))
     return render_template("omr_scan.html")
+
+@app.route("/omr-bulk-upload",methods=["POST"])
+@logged
+def omr_bulk_upload():
+    files=request.files.getlist("sheets"); success=[]; errors=[]
+    for f in files:
+        if not f or not f.filename: continue
+        try:
+            script,name,flags=process_omr_bytes(f.read())
+            success.append(f"{f.filename}: {name} (script #{script})" + (f"; review {', '.join(flags)}" if flags else ""))
+        except Exception as ex: errors.append(f"{f.filename}: {ex}")
+    if success: flash(f"Bulk OMR completed: {len(success)} sheet(s) processed. " + " | ".join(success[:8]))
+    if errors: flash(f"Could not process {len(errors)} file(s): " + " | ".join(errors[:8]))
+    return redirect(url_for("omr_scan"))
+
 @app.route("/grade/<int:sid>",methods=["GET","POST"])
 @logged
 def grade(sid):
@@ -305,8 +455,38 @@ def grade(sid):
 @logged
 def results():
     with db() as c:
-        rows=c.execute("""SELECT sc.id sid,sc.status,st.name,st.admission_no,st.grade,e.title,e.subject,COALESCE(SUM(a.marks),0) marks,COALESCE(SUM(q.max_marks),0) maximum FROM scripts sc JOIN students st ON st.id=sc.student_id JOIN exams e ON e.id=sc.exam_id LEFT JOIN answers a ON a.script_id=sc.id LEFT JOIN questions q ON q.id=a.question_id GROUP BY sc.id""").fetchall()
+        rows=c.execute("""
+            SELECT
+                sc.id AS sid, sc.status, st.name, st.admission_no, st.grade,
+                e.title, e.subject,
+                COALESCE((SELECT SUM(a.marks) FROM answers a WHERE a.script_id=sc.id),0) AS marks,
+                COALESCE((SELECT SUM(q.max_marks) FROM questions q WHERE q.exam_id=sc.exam_id),0) AS maximum
+            FROM scripts sc
+            JOIN students st ON st.id=sc.student_id
+            JOIN exams e ON e.id=sc.exam_id
+            ORDER BY e.id DESC, st.grade, st.section, st.name
+        """).fetchall()
     return render_template("results.html",rows=rows)
 
+@app.route("/results/consolidated")
+@logged
+def consolidated_results():
+    with db() as c:
+        rows=c.execute("""
+            SELECT st.id AS student_id, st.name, st.admission_no, st.grade, st.section,
+                   e.subject, SUM(COALESCE(a.marks,0)) AS marks,
+                   SUM(q.max_marks) AS maximum,
+                   COUNT(DISTINCT sc.id) AS exam_count,
+                   GROUP_CONCAT(DISTINCT e.title) AS exams
+            FROM scripts sc
+            JOIN students st ON st.id=sc.student_id
+            JOIN exams e ON e.id=sc.exam_id
+            JOIN answers a ON a.script_id=sc.id
+            JOIN questions q ON q.id=a.question_id
+            GROUP BY st.id, e.subject
+            ORDER BY st.grade, st.section, st.name, e.subject
+        """).fetchall()
+    return render_template("consolidated_results.html",rows=rows)
+
 if __name__=="__main__":
-    init_db();app.run(host="0.0.0.0",port=int(os.environ.get("PORT",5000)),debug=False)
+    init_db();print(f"Using student database: {DB}");app.run(host="0.0.0.0",port=int(os.environ.get("PORT",5000)),debug=False)
